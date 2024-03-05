@@ -2440,35 +2440,35 @@ pub struct Parameter(pub Symbol, pub Type);
 #[derive(Debug)]
 pub struct FunctionData {
     /// Name of this function.
-    name: Symbol,
+    pub name: Symbol,
 
     /// Location of this function.
-    loc: Loc,
+    pub loc: Loc,
 
     /// The definition index of this function in its module.
-    def_idx: FunctionDefinitionIndex,
+    pub def_idx: FunctionDefinitionIndex,
 
     /// The handle index of this function in its module.
-    handle_idx: FunctionHandleIndex,
+    pub handle_idx: FunctionHandleIndex,
 
     /// Attributes attached to this function.
-    attributes: Vec<Attribute>,
+    pub attributes: Vec<Attribute>,
 
     /// List of function argument names. Not in bytecode but obtained from AST.
-    arg_names: Vec<Symbol>,
+    pub arg_names: Vec<Symbol>,
 
     /// List of type argument names. Not in bytecode but obtained from AST.
     #[allow(unused)]
-    type_arg_names: Vec<Symbol>,
+    pub type_arg_names: Vec<Symbol>,
 
     /// A cache for the called functions.
-    called_funs: RefCell<Option<BTreeSet<QualifiedId<FunId>>>>,
+    pub called_funs: RefCell<Option<BTreeSet<QualifiedId<FunId>>>>,
 
     /// A cache for the calling functions.
-    calling_funs: RefCell<Option<BTreeSet<QualifiedId<FunId>>>>,
+    pub calling_funs: RefCell<Option<BTreeSet<QualifiedId<FunId>>>>,
 
     /// A cache for the transitive closure of the called functions.
-    transitive_closure_of_called_funs: RefCell<Option<BTreeSet<QualifiedId<FunId>>>>,
+    pub transitive_closure_of_called_funs: RefCell<Option<BTreeSet<QualifiedId<FunId>>>>,
 }
 
 impl FunctionData {
