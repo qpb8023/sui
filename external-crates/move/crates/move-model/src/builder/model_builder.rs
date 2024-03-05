@@ -24,7 +24,7 @@ use crate::{
 /// are extended with each module translated. Each table is a mapping from fully qualified names
 /// (module names plus item name in the module) to the entity.
 #[derive(Debug)]
-pub(crate) struct ModelBuilder<'env> {
+pub struct ModelBuilder<'env> {
     /// The global environment we are building.
     pub env: &'env mut GlobalEnv,
     /// A symbol table for structs.
@@ -40,7 +40,7 @@ pub(crate) struct ModelBuilder<'env> {
 
 /// A declaration of a struct.
 #[derive(Debug, Clone)]
-pub(crate) struct StructEntry {
+pub struct StructEntry {
     pub loc: Loc,
     pub module_id: ModuleId,
     pub struct_id: StructId,
@@ -51,7 +51,7 @@ pub(crate) struct StructEntry {
 
 /// A declaration of a function.
 #[derive(Debug, Clone)]
-pub(crate) struct FunEntry {
+pub struct FunEntry {
     pub loc: Loc,
     pub type_params: Vec<(Symbol, Type)>,
     pub params: Vec<(Symbol, Type)>,
@@ -59,7 +59,7 @@ pub(crate) struct FunEntry {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ConstEntry {
+pub struct ConstEntry {
     pub loc: Loc,
     pub ty: Type,
     pub value: Value,
@@ -164,6 +164,6 @@ impl<'env> ModelBuilder<'env> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct LocalVarEntry {
+pub struct LocalVarEntry {
     pub loc: Loc,
 }

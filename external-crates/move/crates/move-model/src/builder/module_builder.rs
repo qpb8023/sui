@@ -36,7 +36,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(crate) struct ModuleBuilder<'env, 'translator> {
+pub struct ModuleBuilder<'env, 'translator> {
     pub parent: &'translator mut ModelBuilder<'env>,
     /// Id of the currently build module.
     pub module_id: ModuleId,
