@@ -393,7 +393,7 @@ pub struct GlobalEnv {
     doc_comments: BTreeMap<FileId, BTreeMap<ByteIndex, String>>,
     /// A mapping from file hash to file name and associated FileId. Though this information is
     /// already in `source_files`, we can't get it out of there so need to book keep here.
-    file_hash_map: BTreeMap<FileHash, (String, FileId)>,
+    pub file_hash_map: BTreeMap<FileHash, (String, FileId)>,
     /// A mapping from file id to associated alias map.
     file_alias_map: BTreeMap<FileId, Rc<BTreeMap<Symbol, NumericalAddress>>>,
     /// Bijective mapping between FileId and a plain int. FileId's are themselves wrappers around
