@@ -269,6 +269,13 @@ impl ReachingDefState {
     fn havoc(&mut self, dest: TempIndex) {
         self.havoced.insert(dest);
     }
+
+    pub fn is_alias(&self, idx: TempIndex) -> bool {
+        if self.havoced.contains(&idx) {
+            return false;
+        }
+        self.map.contains_key(&idx)
+    }
 }
 
 // =================================================================================================
