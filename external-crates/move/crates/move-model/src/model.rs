@@ -480,6 +480,155 @@ impl GlobalEnv {
         }
     }
 
+    pub fn attach_compiled_module(
+        &mut self,
+        module_id: ModuleId,
+        module: CompiledModule,
+        source_map: SourceMap,
+    ) {
+        {
+            let mod_data = &mut self.module_data[module_id.0 as usize];
+            mod_data.struct_idx_to_id.clear();
+            mod_data.function_idx_to_id.clear();
+        }
+
+        // Attach struct definitions
+        for idx in 0..module.struct_defs.len() {
+            let def_idx = StructDefinitionIndex(idx as u16);
+            let handle_idx = module.struct_def_at(def_idx).struct_handle;
+            let handle = module.struct_handle_at(handle_idx);
+            let view = StructHandleView::new(&module, handle);
+            let struct_id = StructId(self.symbol_pool.make(view.name().as_str()));
+            let mod_data = &mut self.module_data[module_id.0 as usize];
+            if let Some(struct_data) = mod_data.struct_data.get_mut(&struct_id) {
+                struct_data.info = StructInfo::Declared {
+                    def_idx,
+                    handle_idx,
+                };
+                mod_data.struct_idx_to_id.insert(def_idx, struct_id);
+            } else {
+                panic!("attaching mismatching bytecode module");
+            }
+        }
+
+        // Attach function definitions
+        for idx in 0..module.function_defs.len() {
+            let def_idx = FunctionDefinitionIndex(idx as u16);
+            let handle_idx = module.function_def_at(def_idx).function;
+            let handle = module.function_handle_at(handle_idx);
+            let view = FunctionHandleView::new(&module, handle);
+            let name_str = view.name().as_str();
+            let fun_id = if name_str == SCRIPT_BYTECODE_FUN_NAME {
+                // This is a pseudo script module, determine the name of this function.
+                let mod_data = &self.module_data[module_id.0 as usize];
+                *mod_data
+                    .function_data
+                    .iter()
+                    .next()
+                    .expect("script has function")
+                    .0
+            } else {
+                FunId(self.symbol_pool.make(name_str))
+            };
+
+            // While releasing any mutation, compute the called functions if needed.
+            let fun_data = &self.module_data[module_id.0 as usize]
+                .function_data
+                .get(&fun_id)
+                .unwrap();
+            let called_funs = if fun_data.called_funs.borrow().is_none() {
+                Some(self.get_called_funs_from_bytecode(module_id, &module, def_idx))
+            } else {
+                None
+            };
+
+            let mod_data = &mut self.module_data[module_id.0 as usize];
+            if let Some(fun_data) = mod_data.function_data.get_mut(&fun_id) {
+                fun_data.def_idx = def_idx;
+                fun_data.handle_idx = handle_idx;
+                mod_data.function_idx_to_id.insert(def_idx, fun_id);
+                if let Some(called_funs) = called_funs {
+                    fun_data.called_funs = RefCell::new(Some(called_funs));
+                }
+            } else {
+                panic!("attaching mismatching bytecode module");
+            }
+        }
+
+        // Get used and friend modules from bytecode
+        let used_modules = self.get_used_modules_from_bytecode(&module);
+        let friend_modules = self.get_friend_modules_from_bytecode(&module);
+
+        // Update module_data with bytecode information
+        let mod_data = &mut self.module_data[module_id.0 as usize];
+        let mut module_map: BTreeMap<bool, BTreeSet<ModuleId>> = BTreeMap::new();
+        module_map.insert(true, used_modules);
+
+        // 使用 RefCell 包裹这个 BTreeMap
+        let module_map_refcell = RefCell::new(module_map);
+        mod_data.used_modules = module_map_refcell;
+        mod_data.friend_modules = RefCell::new(Some(friend_modules));
+        mod_data.module = module;
+        mod_data.source_map = source_map;
+    }
+
+    fn get_used_modules_from_bytecode(
+        &self,
+        compiled_module: &CompiledModule,
+    ) -> BTreeSet<ModuleId> {
+        compiled_module
+            .immediate_dependencies()
+            .into_iter()
+            .map(|storage_id| self.to_module_name(&storage_id))
+            .filter_map(|name| self.find_module(&name))
+            .map(|module_env| module_env.get_id())
+            .collect()
+    }
+
+    fn get_friend_modules_from_bytecode(
+        &self,
+        compiled_module: &CompiledModule,
+    ) -> BTreeSet<ModuleId> {
+        compiled_module
+            .immediate_friends()
+            .into_iter()
+            .map(|storage_id| self.to_module_name(&storage_id))
+            .flat_map(|name| self.find_module(&name))
+            .map(|module_env| module_env.get_id())
+            .collect()
+    }
+
+    fn get_called_funs_from_bytecode(
+        &self,
+        module_id: ModuleId,
+        module: &CompiledModule,
+        def_idx: FunctionDefinitionIndex,
+    ) -> BTreeSet<QualifiedId<FunId>> {
+        let module_env = self.get_module(module_id);
+        let function_definition = module.function_def_at(def_idx);
+        let function_definition_view = FunctionDefinitionView::new(module, function_definition);
+        let called_funs: BTreeSet<QualifiedId<FunId>> = match function_definition_view.code() {
+            Some(unit) => unit
+                .code
+                .iter()
+                .filter_map(|c| {
+                    let handle_idx = match c {
+                        Bytecode::Call(i) => Some(*i),
+                        Bytecode::CallGeneric(i) => {
+                            Some(module.function_instantiation_at(*i).handle)
+                        }
+                        _ => None,
+                    };
+                    handle_idx.map(|idx: FunctionHandleIndex| {
+                        module_env.get_used_function(idx).get_qualified_id()
+                    })
+                })
+                .collect(),
+            None => BTreeSet::default(),
+        };
+        called_funs
+    }
+
     /// Creates a display container for the given value. There must be an implementation
     /// of fmt::Display for an instance to work in formatting.
     pub fn display<'a, T>(&'a self, val: &'a T) -> EnvDisplay<'a, T> {
