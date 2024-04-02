@@ -1,7 +1,3 @@
-//**************************************************************************************************
-// Entry
-//**************************************************************************************************
-
 // Copyright (c) The Diem Core Contributors
 // Copyright (c) The Move Contributors
 // SPDX-License-Identifier: Apache-2.0
@@ -30,6 +26,7 @@ use once_cell::sync::Lazy;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     convert::TryInto,
+    sync::Arc,
 };
 
 //**************************************************************************************************
@@ -124,7 +121,7 @@ struct Context<'env> {
 impl<'env> Context<'env> {
     pub fn new(
         env: &'env mut CompilationEnv,
-        pre_compiled_lib_opt: Option<&FullyCompiledProgram>,
+        pre_compiled_lib_opt: Option<Arc<FullyCompiledProgram>>,
         prog: &T::Program_,
     ) -> Self {
         fn add_struct_fields(
@@ -253,7 +250,7 @@ impl<'env> Context<'env> {
 
 pub fn program(
     compilation_env: &mut CompilationEnv,
-    pre_compiled_lib: Option<&FullyCompiledProgram>,
+    pre_compiled_lib: Option<Arc<FullyCompiledProgram>>,
     prog: T::Program,
 ) -> H::Program {
     detect_dead_code_analysis(compilation_env, &prog);
@@ -340,7 +337,8 @@ fn function(context: &mut Context, _name: FunctionName, f: T::Function) -> H::Fu
         warning_filter,
         index,
         attributes,
-        visibility: evisibility,
+        compiled_visibility: tcompiled_visibility,
+        visibility: tvisibility,
         entry,
         macro_,
         signature,
@@ -355,7 +353,8 @@ fn function(context: &mut Context, _name: FunctionName, f: T::Function) -> H::Fu
         warning_filter,
         index,
         attributes,
-        visibility: visibility(evisibility),
+        compiled_visibility: visibility(tcompiled_visibility),
+        visibility: visibility(tvisibility),
         entry,
         signature,
         body,
@@ -1274,6 +1273,7 @@ fn value(
         }
         E::Value(ev) => make_exp(HE::Value(process_value(context, ev))),
         E::Constant(_m, c) => make_exp(HE::Constant(c)), // only private constants (for now)
+        E::ErrorConstant(c) => make_exp(HE::ErrorConstant(c)),
         E::Move { from_user, var } => {
             let annotation = if from_user {
                 MoveOpAnnotation::FromUser
@@ -1632,6 +1632,7 @@ fn statement(context: &mut Context, block: &mut Block, e: T::Exp) {
         | E::Annotate(_, _)
         | E::BorrowLocal(_, _)
         | E::Constant(_, _)
+        | E::ErrorConstant(_)
         | E::Move { .. }
         | E::Copy { .. }
         | E::UnresolvedError

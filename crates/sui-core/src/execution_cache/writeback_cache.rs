@@ -78,12 +78,12 @@ use sui_types::messages_checkpoint::CheckpointSequenceNumber;
 use sui_types::object::Object;
 use sui_types::storage::{MarkerValue, ObjectKey, ObjectOrTombstone, ObjectStore, PackageObject};
 use sui_types::sui_system_state::{get_sui_system_state, SuiSystemState};
-use sui_types::transaction::VerifiedTransaction;
-use tracing::{info, instrument};
+use sui_types::transaction::{VerifiedSignedTransaction, VerifiedTransaction};
+use tracing::{debug, info, instrument, trace};
 
 use super::ExecutionCacheAPI;
 use super::{
-    cached_version_map::CachedVersionMap, implement_passthrough_traits, CheckpointCache,
+    cache_types::CachedVersionMap, implement_passthrough_traits, CheckpointCache,
     ExecutionCacheCommit, ExecutionCacheMetrics, ExecutionCacheRead, ExecutionCacheReconfigAPI,
     ExecutionCacheWrite, NotifyReadWrapper, StateSyncAPI,
 };
@@ -147,7 +147,7 @@ struct UncommittedData {
     /// This table may contain both live and dead objects, since we flush both live and dead
     /// objects to the db in order to support past object queries on fullnodes.
     ///
-    /// Further, we only remove objects in FIFO order, which ensures that the the cached
+    /// Further, we only remove objects in FIFO order, which ensures that the cached
     /// sequence of objects has no gaps. In other words, if we have versions 4, 8, 13 of
     /// an object, we can deduce that version 9 does not exist. This also makes child object
     /// reads efficient. `object_cache` cannot contain a more recent version of an object than
@@ -475,7 +475,103 @@ impl WritebackCache {
         )
     }
 
+    #[instrument(level = "debug", skip_all)]
+    async fn write_transaction_outputs(
+        &self,
+        epoch_id: EpochId,
+        tx_outputs: Arc<TransactionOutputs>,
+    ) -> SuiResult {
+        trace!(digest = ?tx_outputs.transaction.digest(), "writing transaction outputs to cache");
+
+        let TransactionOutputs {
+            transaction,
+            effects,
+            markers,
+            written,
+            deleted,
+            wrapped,
+            events,
+            ..
+        } = &*tx_outputs;
+
+        // Deletions and wraps must be written first. The reason is that one of the deletes
+        // may be a child object, and if we write the parent object first, a reader may or may
+        // not see the previous version of the child object, instead of the deleted/wrapped
+        // tombstone, which would cause an execution fork
+        for ObjectKey(id, version) in deleted.iter() {
+            self.write_object_entry(id, *version, ObjectEntry::Deleted)
+                .await;
+        }
+
+        for ObjectKey(id, version) in wrapped.iter() {
+            self.write_object_entry(id, *version, ObjectEntry::Wrapped)
+                .await;
+        }
+
+        // Update all markers
+        for (object_key, marker_value) in markers.iter() {
+            self.write_marker_value(epoch_id, object_key, *marker_value)
+                .await;
+        }
+
+        // Write children before parents to ensure that readers do not observe a parent object
+        // before its most recent children are visible.
+        for (object_id, object) in written.iter() {
+            if object.is_child_object() {
+                self.write_object_entry(object_id, object.version(), object.clone().into())
+                    .await;
+            }
+        }
+        for (object_id, object) in written.iter() {
+            if !object.is_child_object() {
+                self.write_object_entry(object_id, object.version(), object.clone().into())
+                    .await;
+                if object.is_package() {
+                    debug!("caching package: {:?}", object.compute_object_reference());
+                    self.packages
+                        .insert(*object_id, PackageObject::new(object.clone()));
+                }
+            }
+        }
+
+        let tx_digest = *transaction.digest();
+        let effects_digest = effects.digest();
+
+        self.dirty
+            .transaction_effects
+            .insert(effects_digest, effects.clone());
+
+        match self.dirty.transaction_events.entry(events.digest()) {
+            DashMapEntry::Occupied(mut occupied) => {
+                occupied.get_mut().0.insert(tx_digest);
+            }
+            DashMapEntry::Vacant(entry) => {
+                let mut txns = BTreeSet::new();
+                txns.insert(tx_digest);
+                entry.insert((txns, events.clone()));
+            }
+        }
+
+        self.dirty
+            .executed_effects_digests
+            .insert(tx_digest, effects_digest);
+
+        self.dirty
+            .pending_transaction_writes
+            .insert(tx_digest, tx_outputs);
+
+        self.executed_effects_digests_notify_read
+            .notify(&tx_digest, &effects_digest);
+
+        self.metrics
+            .pending_notify_read
+            .set(self.executed_effects_digests_notify_read.num_pending() as i64);
+
+        Ok(())
+    }
+
     // Commits dirty data for the given TransactionDigest to the db.
+    #[instrument(level = "debug", skip(self))]
     async fn commit_transaction_outputs(
         &self,
         epoch: EpochId,
@@ -774,10 +870,12 @@ impl ExecutionCacheRead for WritebackCache {
     ) -> Result<Vec<Option<Object>>, SuiError> {
         do_fallback_lookup(
             object_keys,
-            |key| match self.get_object_by_key_cache_only(&key.0, key.1) {
-                CacheResult::Hit(maybe_object) => CacheResult::Hit(Some(maybe_object)),
-                CacheResult::NegativeHit => CacheResult::NegativeHit,
-                CacheResult::Miss => CacheResult::Miss,
+            |key| {
+                Ok(match self.get_object_by_key_cache_only(&key.0, key.1) {
+                    CacheResult::Hit(maybe_object) => CacheResult::Hit(Some(maybe_object)),
+                    CacheResult::NegativeHit => CacheResult::NegativeHit,
+                    CacheResult::Miss => CacheResult::Miss,
+                })
             },
             |remaining| {
                 self.store
@@ -802,10 +900,12 @@ impl ExecutionCacheRead for WritebackCache {
     fn multi_object_exists_by_key(&self, object_keys: &[ObjectKey]) -> SuiResult<Vec<bool>> {
         do_fallback_lookup(
             object_keys,
-            |key| match self.get_object_by_key_cache_only(&key.0, key.1) {
-                CacheResult::Hit(_) => CacheResult::Hit(true),
-                CacheResult::NegativeHit => CacheResult::Hit(false),
-                CacheResult::Miss => CacheResult::Miss,
+            |key| {
+                Ok(match self.get_object_by_key_cache_only(&key.0, key.1) {
+                    CacheResult::Hit(_) => CacheResult::Hit(true),
+                    CacheResult::NegativeHit => CacheResult::Hit(false),
+                    CacheResult::Miss => CacheResult::Miss,
+                })
             },
             |remaining| self.store.multi_object_exists_by_key(remaining),
         )
@@ -903,11 +1003,13 @@ impl ExecutionCacheRead for WritebackCache {
         do_fallback_lookup(
             digests,
             |digest| {
-                if let Some(tx) = self.dirty.pending_transaction_writes.get(digest) {
-                    CacheResult::Hit(Some(tx.transaction.clone()))
-                } else {
-                    CacheResult::Miss
-                }
+                Ok(
+                    if let Some(tx) = self.dirty.pending_transaction_writes.get(digest) {
+                        CacheResult::Hit(Some(tx.transaction.clone()))
+                    } else {
+                        CacheResult::Miss
+                    },
+                )
             },
             |remaining| {
                 self.store
@@ -924,11 +1026,13 @@ impl ExecutionCacheRead for WritebackCache {
         do_fallback_lookup(
             digests,
             |digest| {
-                if let Some(digest) = self.dirty.executed_effects_digests.get(digest) {
-                    CacheResult::Hit(Some(*digest))
-                } else {
-                    CacheResult::Miss
-                }
+                Ok(
+                    if let Some(digest) = self.dirty.executed_effects_digests.get(digest) {
+                        CacheResult::Hit(Some(*digest))
+                    } else {
+                        CacheResult::Miss
+                    },
+                )
             },
             |remaining| self.store.multi_get_executed_effects_digests(remaining),
         )
@@ -941,11 +1045,13 @@ impl ExecutionCacheRead for WritebackCache {
         do_fallback_lookup(
             digests,
             |digest| {
-                if let Some(effects) = self.dirty.transaction_effects.get(digest) {
-                    CacheResult::Hit(Some(effects.clone()))
-                } else {
-                    CacheResult::Miss
-                }
+                Ok(
+                    if let Some(effects) = self.dirty.transaction_effects.get(digest) {
+                        CacheResult::Hit(Some(effects.clone()))
+                    } else {
+                        CacheResult::Miss
+                    },
+                )
             },
             |remaining| self.store.multi_get_effects(remaining.iter()),
         )
@@ -983,11 +1089,13 @@ impl ExecutionCacheRead for WritebackCache {
         do_fallback_lookup(
             event_digests,
             |digest| {
-                if let Some(events) = self.dirty.transaction_events.get(digest) {
-                    CacheResult::Hit(Some(events.1.clone()))
-                } else {
-                    CacheResult::Miss
-                }
+                Ok(
+                    if let Some(events) = self.dirty.transaction_events.get(digest) {
+                        CacheResult::Hit(Some(events.1.clone()))
+                    } else {
+                        CacheResult::Miss
+                    },
+                )
             },
             |digests| self.store.multi_get_events(digests),
         )
@@ -1024,7 +1132,11 @@ impl ExecutionCacheRead for WritebackCache {
         }
     }
 
-    fn get_lock(&self, _obj_ref: ObjectRef, _epoch_id: EpochId) -> SuiLockResult {
+    fn get_lock(
+        &self,
+        _obj_ref: ObjectRef,
+        _epoch_store: &AuthorityPerEpochStore,
+    ) -> SuiLockResult {
         todo!()
     }
 
@@ -1041,106 +1153,19 @@ impl ExecutionCacheWrite for WritebackCache {
     #[instrument(level = "trace", skip_all)]
     fn acquire_transaction_locks<'a>(
         &'a self,
-        _epoch_id: EpochId,
+        _epoch_store: &AuthorityPerEpochStore,
         _owned_input_objects: &'a [ObjectRef],
-        _tx_digest: TransactionDigest,
+        _tx_digest: VerifiedSignedTransaction,
     ) -> BoxFuture<'a, SuiResult> {
         todo!()
     }
 
-    #[instrument(level = "debug", skip_all)]
     fn write_transaction_outputs(
         &self,
         epoch_id: EpochId,
         tx_outputs: Arc<TransactionOutputs>,
     ) -> BoxFuture<'_, SuiResult> {
-        async move {
-            let TransactionOutputs {
-                transaction,
-                effects,
-                markers,
-                written,
-                deleted,
-                wrapped,
-                events,
-                ..
-            } = &*tx_outputs;
-
-            // Deletions and wraps must be written first. The reason is that one of the deletes
-            // may be a child object, and if we write the parent object first, a reader may or may
-            // not see the previous version of the child object, instead of the deleted/wrapped
-            // tombstone, which would cause an execution fork
-            for ObjectKey(id, version) in deleted.iter() {
-                self.write_object_entry(id, *version, ObjectEntry::Deleted)
-                    .await;
-            }
-
-            for ObjectKey(id, version) in wrapped.iter() {
-                self.write_object_entry(id, *version, ObjectEntry::Wrapped)
-                    .await;
-            }
-
-            // Update all markers
-            for (object_key, marker_value) in markers.iter() {
-                self.write_marker_value(epoch_id, object_key, *marker_value)
-                    .await;
-            }
-
-            // Write children before parents to ensure that readers do not observe a parent object
-            // before its most recent children are visible.
-            for (object_id, object) in written.iter() {
-                if object.is_child_object() {
-                    self.write_object_entry(object_id, object.version(), object.clone().into())
-                        .await;
-                }
-            }
-            for (object_id, object) in written.iter() {
-                if !object.is_child_object() {
-                    self.write_object_entry(object_id, object.version(), object.clone().into())
-                        .await;
-                    if object.is_package() {
-                        self.packages
-                            .insert(*object_id, PackageObject::new(object.clone()));
-                    }
-                }
-            }
-
-            let tx_digest = *transaction.digest();
-            let effects_digest = effects.digest();
-
-            self.dirty
-                .transaction_effects
-                .insert(effects_digest, effects.clone());
-
-            match self.dirty.transaction_events.entry(events.digest()) {
-                DashMapEntry::Occupied(mut occupied) => {
-                    occupied.get_mut().0.insert(tx_digest);
-                }
-                DashMapEntry::Vacant(entry) => {
-                    let mut txns = BTreeSet::new();
-                    txns.insert(tx_digest);
-                    entry.insert((txns, events.clone()));
-                }
-            }
-
-            self.dirty
-                .executed_effects_digests
-                .insert(tx_digest, effects_digest);
-
-            self.dirty
-                .pending_transaction_writes
-                .insert(tx_digest, tx_outputs);
-
-            self.executed_effects_digests_notify_read
-                .notify(&tx_digest, &effects_digest);
-
-            self.metrics
-                .pending_notify_read
-                .set(self.executed_effects_digests_notify_read.num_pending() as i64);
-
-            Ok(())
-        }
-        .boxed()
+        WritebackCache::write_transaction_outputs(self, epoch_id, tx_outputs).boxed()
     }
 }
 
@@ -1153,7 +1178,7 @@ impl ExecutionCacheWrite for WritebackCache {
 /// via the get_cached_key and multiget_fallback functions.
 fn do_fallback_lookup<K: Copy, V: Default + Clone>(
     keys: &[K],
-    get_cached_key: impl Fn(&K) -> CacheResult<V>,
+    get_cached_key: impl Fn(&K) -> SuiResult<CacheResult<V>>,
     multiget_fallback: impl Fn(&[K]) -> SuiResult<Vec<V>>,
 ) -> SuiResult<Vec<V>> {
     let mut results = vec![V::default(); keys.len()];
@@ -1161,7 +1186,7 @@ fn do_fallback_lookup<K: Copy, V: Default + Clone>(
     let mut fallback_indices = Vec::with_capacity(keys.len());
 
     for (i, key) in keys.iter().enumerate() {
-        match get_cached_key(key) {
+        match get_cached_key(key)? {
             CacheResult::Miss => {
                 fallback_keys.push(*key);
                 fallback_indices.push(i);

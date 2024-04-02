@@ -37,6 +37,8 @@ struct ProgramParsingState {
     preview_set: bool,
     summary_set: bool,
     warn_shadows_set: bool,
+    serialize_unsigned_set: bool,
+    serialize_signed_set: bool,
     json_set: bool,
     gas_object_id: Option<Spanned<ObjectID>>,
     gas_budget: Option<Spanned<u64>>,
@@ -56,6 +58,8 @@ impl<'a, I: Iterator<Item = &'a str>> ProgramParser<'a, I> {
                 preview_set: false,
                 summary_set: false,
                 warn_shadows_set: false,
+                serialize_unsigned_set: false,
+                serialize_signed_set: false,
                 json_set: false,
                 gas_object_id: None,
                 gas_budget: None,
@@ -99,6 +103,8 @@ impl<'a, I: Iterator<Item = &'a str>> ProgramParser<'a, I> {
             }
 
             match lexeme {
+                L(T::Command, A::SERIALIZE_UNSIGNED) => flag!(serialize_unsigned_set),
+                L(T::Command, A::SERIALIZE_SIGNED) => flag!(serialize_signed_set),
                 L(T::Command, A::SUMMARY) => flag!(summary_set),
                 L(T::Command, A::JSON) => flag!(json_set),
                 L(T::Command, A::PREVIEW) => flag!(preview_set),
@@ -201,6 +207,8 @@ impl<'a, I: Iterator<Item = &'a str>> ProgramParser<'a, I> {
                 A::ProgramMetadata {
                     preview_set: self.state.preview_set,
                     summary_set: self.state.summary_set,
+                    serialize_unsigned_set: self.state.serialize_unsigned_set,
+                    serialize_signed_set: self.state.serialize_signed_set,
                     gas_object_id: self.state.gas_object_id,
                     json_set: self.state.json_set,
                     gas_budget,
@@ -255,14 +263,14 @@ impl<'a, I: Iterator<Item = &'a str>> ProgramParser<'a, I> {
 /// Methods for parsing commands
 impl<'a, I: Iterator<Item = &'a str>> ProgramParser<'a, I> {
     /// Parse a transfer-objects command.
-    /// The expected format is: `--transfer-objects <to> [<from>, ...]`
+    /// The expected format is: `--transfer-objects [<from>, ...] <to>`
     fn parse_transfer_objects(&mut self) -> PTBResult<Spanned<ParsedPTBCommand>> {
-        let transfer_to = self.parse_argument()?;
         let transfer_froms = self.parse_array()?;
+        let transfer_to = self.parse_argument()?;
         let sp = transfer_to.span.widen(transfer_froms.span);
         Ok(sp.wrap(ParsedPTBCommand::TransferObjects(
-            transfer_to,
             transfer_froms,
+            transfer_to,
         )))
     }
 
@@ -730,7 +738,7 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let input = "--transfer-objects a [b, c]";
+        let input = "--transfer-objects [b, c] a";
         let mut x = shlex::split(input).unwrap();
         x.push("--gas-budget 1".to_owned());
         let parser = ProgramParser::new(x.iter().map(|x| x.as_str())).unwrap();
@@ -910,9 +918,9 @@ mod tests {
             // Upgrade
             "--upgrade foo @0x1",
             // Transfer objects
-            "--transfer-objects a [b, c]",
-            "--transfer-objects a [b]",
-            "--transfer-objects a.0 [b]",
+            "--transfer-objects [b, c] a",
+            "--transfer-objects [b] a",
+            "--transfer-objects [b] a.0",
             // Split coins
             "--split-coins a [b, c]",
             "--split-coins a [c]",
@@ -966,6 +974,7 @@ mod tests {
             "--transfer-objects a",
             "--transfer-objects [b]",
             "--transfer-objects",
+            "--transfer-objects [a] [b]",
             // Split coins
             "--split-coins a",
             "--split-coins [b]",

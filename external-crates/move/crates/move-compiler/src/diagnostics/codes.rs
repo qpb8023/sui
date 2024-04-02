@@ -163,6 +163,7 @@ codes!(
     Uncategorized: [
         DeprecatedWillBeRemoved: { msg: "DEPRECATED. will be removed", severity: Warning },
         DeprecatedSpecItem: { msg: "DEPRECATED. unexpected spec item", severity: NonblockingError },
+        UnableToMigrate: { msg: "unable to migrate", severity: NonblockingError },
     ],
     // syntax errors
     Syntax: [
@@ -182,6 +183,9 @@ codes!(
             { msg: "invalid identifier escape", severity: NonblockingError },
         InvalidMoveOrCopy: { msg: "invalid 'move' or 'copy'", severity: NonblockingError },
         InvalidLabel: { msg: "invalid expression label", severity: NonblockingError },
+        AmbiguousCast: { msg: "ambiguous 'as'", severity: NonblockingError },
+        InvalidName: { msg: "invalid name", severity: BlockingError },
+        InvalidMacro: { msg: "invalid macro invocation", severity: BlockingError },
     ],
     // errors for any rules around declaration items
     Declarations: [
@@ -210,6 +214,7 @@ codes!(
         UnknownAttribute: { msg: "unknown attribute", severity: Warning },
         InvalidSyntaxMethod: { msg: "invalid 'syntax' method type", severity: NonblockingError },
         MissingSyntaxMethod: { msg: "no valid 'syntax' declaration found", severity: BlockingError },
+        DuplicateAlias: { msg: "duplicate alias", severity: Warning },
     ],
     // errors name resolution, mostly expansion/translate and naming/translate
     NameResolution: [
@@ -230,6 +235,7 @@ codes!(
         UnboundLabel: { msg: "unbound label", severity: BlockingError },
         InvalidMut: { msg: "invalid 'mut' declaration", severity: NonblockingError },
         InvalidMacroParameter: { msg: "invalid macro parameter", severity: NonblockingError },
+        InvalidTypeParameter: { msg: "invalid type parameter", severity: NonblockingError },
     ],
     // errors for typing rules. mostly typing/translate
     TypeSafety: [
@@ -274,6 +280,7 @@ codes!(
         CannotExpandMacro: { msg: "unable to expand macro function", severity: BlockingError },
         InvariantError: { msg: "types are not equal", severity: BlockingError },
         IncompatibleSyntaxMethods: { msg: "'syntax' method types differ", severity: BlockingError },
+        InvalidErrorUsage: { msg: "invalid constant usage in error context", severity: BlockingError },
     ],
     // errors for ability rules. mostly typing/translate
     AbilitySafety: [
@@ -342,11 +349,20 @@ codes!(
             msg: "feature is not supported in specified edition",
             severity: NonblockingError,
         },
+        DeprecatedFeature: {
+            msg: "feature is deprecated in specified edition",
+            severity: NonblockingError,
+        },
     ],
     Migration: [
         NeedsPublic: { msg: "move 2024 migration: public struct", severity: NonblockingError },
         NeedsLetMut: { msg: "move 2024 migration: let mut", severity: NonblockingError },
         NeedsRestrictedIdentifier: { msg: "move 2024 migration: restricted identifier", severity: NonblockingError },
+        NeedsGlobalQualification: { msg: "move 2024 migration: global qualification", severity: NonblockingError },
+        RemoveFriend: { msg: "move 2024 migration: remove 'friend'", severity: NonblockingError },
+        MakePubPackage: { msg: "move 2024 migration: make 'public(package)'", severity: NonblockingError },
+        AddressRemove: { msg: "move 2024 migration: address remove", severity: NonblockingError },
+        AddressAdd: { msg: "move 2024 migration: address add", severity: NonblockingError },
     ]
 );
 

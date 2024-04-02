@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use shared_crypto::intent::{Intent, IntentMessage, IntentScope};
 use std::fmt::Write;
 use std::fmt::{Debug, Display, Formatter};
+use std::iter::once;
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     hash::Hash,
@@ -754,6 +755,12 @@ impl ProgrammableMoveCall {
         );
         Ok(())
     }
+
+    fn is_input_arg_used(&self, arg: u16) -> bool {
+        self.arguments
+            .iter()
+            .any(|a| matches!(a, Argument::Input(inp) if *inp == arg))
+    }
 }
 
 impl Command {
@@ -847,7 +854,7 @@ impl Command {
                     }
                 );
             }
-            Command::Publish(modules, _) | Command::Upgrade(modules, _, _, _) => {
+            Command::Publish(modules, deps) | Command::Upgrade(modules, deps, _, _) => {
                 fp_ensure!(!modules.is_empty(), UserInputError::EmptyCommandInput);
                 fp_ensure!(
                     modules.len() < config.max_modules_in_publish() as usize,
@@ -857,9 +864,38 @@ impl Command {
                         value: config.max_modules_in_publish().to_string()
                     }
                 );
+                if let Some(max_package_dependencies) = config.max_package_dependencies_as_option()
+                {
+                    fp_ensure!(
+                        deps.len() < max_package_dependencies as usize,
+                        UserInputError::SizeLimitExceeded {
+                            limit: "maximum package dependencies".to_string(),
+                            value: max_package_dependencies.to_string()
+                        }
+                    );
+                };
             }
         };
         Ok(())
+    }
+
+    fn is_input_arg_used(&self, input_arg: u16) -> bool {
+        match self {
+            Command::MoveCall(c) => c.is_input_arg_used(input_arg),
+            Command::TransferObjects(args, arg)
+            | Command::MergeCoins(arg, args)
+            | Command::SplitCoins(arg, args) => args
+                .iter()
+                .chain(once(arg))
+                .any(|a| matches!(a, Argument::Input(inp) if *inp == input_arg)),
+            Command::MakeMoveVec(_, args) => args
+                .iter()
+                .any(|a| matches!(a, Argument::Input(inp) if *inp == input_arg)),
+            Command::Upgrade(_, _, _, arg) => {
+                matches!(arg, Argument::Input(inp) if *inp == input_arg)
+            }
+            Command::Publish(_, _) => false,
+        }
     }
 }
 
@@ -945,6 +981,27 @@ impl ProgrammableTransaction {
         }
         for command in commands {
             command.validity_check(config)?;
+        }
+
+        // A command that uses Random can only be followed by TransferObjects or MergeCoins.
+        if let Some(random_index) = inputs.iter().position(|obj| {
+            matches!(obj, CallArg::Object(ObjectArg::SharedObject { id, .. }) if *id == SUI_RANDOMNESS_STATE_OBJECT_ID)
+        }) {
+            let mut used_random_object = false;
+            let random_index = random_index.try_into().unwrap();
+            for command in commands {
+                if !used_random_object {
+                    used_random_object = command.is_input_arg_used(random_index);
+                } else {
+                    fp_ensure!(
+                        matches!(
+                            command,
+                            Command::TransferObjects(_, _) | Command::MergeCoins(_, _)
+                        ),
+                        UserInputError::PostRandomCommandRestrictions
+                    );
+                }
+            }
         }
 
         Ok(())
@@ -2186,6 +2243,17 @@ impl SenderSignedData {
 
         Ok(())
     }
+
+    pub fn verify_max_epoch_for_all_sigs(
+        &self,
+        epoch: EpochId,
+        upper_bound_for_max_epoch: Option<u64>,
+    ) -> SuiResult {
+        for sig in &self.inner().tx_signatures {
+            sig.verify_user_authenticator_epoch(epoch, upper_bound_for_max_epoch)?;
+        }
+        Ok(())
+    }
 }
 
 impl VersionedProtocolMessage for SenderSignedData {
@@ -2276,9 +2344,9 @@ impl Message for SenderSignedData {
 
     fn verify_epoch(&self, epoch: EpochId) -> SuiResult {
         for sig in &self.inner().tx_signatures {
-            sig.verify_user_authenticator_epoch(epoch)?;
+            // the upper bound is checked for SenderSignedData only via verify_max_epoch_for_all_sigs
+            sig.verify_user_authenticator_epoch(epoch, None)?;
         }
-
         Ok(())
     }
 }

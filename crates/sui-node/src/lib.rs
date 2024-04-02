@@ -28,6 +28,7 @@ use sui_core::consensus_adapter::SubmitToConsensus;
 use sui_core::epoch::randomness::RandomnessManager;
 use sui_core::execution_cache::ExecutionCacheMetrics;
 use sui_core::execution_cache::NotifyReadWrapper;
+use sui_json_rpc::ServerType;
 use sui_json_rpc_api::JsonRpcMetrics;
 use sui_network::randomness;
 use sui_protocol_config::ProtocolVersion;
@@ -207,6 +208,7 @@ use simulator::*;
 pub use simulator::set_jwk_injector;
 use sui_core::consensus_handler::ConsensusHandlerInitializer;
 use sui_core::mysticeti_adapter::LazyMysticetiClient;
+use sui_types::execution_config_utils::to_binary_config;
 
 pub struct SuiNode {
     config: NodeConfig,
@@ -580,7 +582,8 @@ impl SuiNode {
                 .await?;
 
         // Start uploading state snapshot to remote store
-        let state_snapshot_handle = Self::start_state_snapshot(&config, &prometheus_registry)?;
+        let state_snapshot_handle =
+            Self::start_state_snapshot(&config, &prometheus_registry, checkpoint_store.clone())?;
 
         // Start uploading db checkpoints to remote store
         let (db_checkpoint_config, db_checkpoint_handle) = Self::start_db_checkpoint(
@@ -855,6 +858,7 @@ impl SuiNode {
     fn start_state_snapshot(
         config: &NodeConfig,
         prometheus_registry: &Registry,
+        checkpoint_store: Arc<CheckpointStore>,
     ) -> Result<Option<tokio::sync::broadcast::Sender<()>>> {
         if let Some(remote_store_config) = &config.state_snapshot_write_config.object_store_config {
             let snapshot_uploader = StateSnapshotUploader::new(
@@ -863,6 +867,7 @@ impl SuiNode {
                 remote_store_config.clone(),
                 60,
                 prometheus_registry,
+                checkpoint_store,
             )?;
             Ok(Some(snapshot_uploader.start()))
         } else {
@@ -1238,6 +1243,19 @@ impl SuiNode {
 
         consensus_adapter.swap_low_scoring_authorities(low_scoring_authorities.clone());
 
+        if epoch_store.randomness_state_enabled() {
+            let randomness_manager = RandomnessManager::try_new(
+                Arc::downgrade(&epoch_store),
+                consensus_adapter.clone(),
+                randomness_handle,
+                config.protocol_key_pair(),
+            )
+            .await;
+            if let Some(randomness_manager) = randomness_manager {
+                epoch_store.set_randomness_manager(randomness_manager)?;
+            }
+        }
+
         let throughput_calculator = Arc::new(ConsensusThroughputCalculator::new(
             None,
             state.metrics.clone(),
@@ -1283,20 +1301,6 @@ impl SuiNode {
                 epoch_store.clone(),
                 consensus_adapter.clone(),
             );
-        }
-
-        if epoch_store.randomness_state_enabled() {
-            let randomness_manager = RandomnessManager::try_new(
-                Arc::downgrade(&epoch_store),
-                consensus_adapter.clone(),
-                randomness_handle,
-                config.protocol_key_pair(),
-            )
-            .await
-            .map(Arc::new);
-            if let Some(randomness_manager) = &randomness_manager {
-                epoch_store.set_randomness_manager(randomness_manager.clone())?;
-            }
         }
 
         Ok(ValidatorComponents {
@@ -1492,8 +1496,7 @@ impl SuiNode {
                 tokio::time::sleep(Duration::from_millis(1)).await;
 
                 let config = cur_epoch_store.protocol_config();
-                let max_binary_format_version = config.move_binary_format_version();
-                let no_extraneous_module_bytes = config.no_extraneous_module_bytes();
+                let binary_config = to_binary_config(config);
                 let transaction =
                     ConsensusTransaction::new_capability_notification(AuthorityCapabilities::new(
                         self.state.name,
@@ -1501,10 +1504,7 @@ impl SuiNode {
                             .supported_protocol_versions
                             .expect("Supported versions should be populated"),
                         self.state
-                            .get_available_system_packages(
-                                max_binary_format_version,
-                                no_extraneous_module_bytes,
-                            )
+                            .get_available_system_packages(&binary_config)
                             .await,
                     ));
                 info!(?transaction, "submitting capabilities to consensus");
@@ -1518,6 +1518,7 @@ impl SuiNode {
                 .await;
 
             if stop_condition == StopReason::RunWithRangeCondition {
+                SuiNode::shutdown(&self).await;
                 self.shutdown_channel_tx
                     .send(run_with_range)
                     .expect("RunWithRangeCondition met but failed to send shutdown message");
@@ -1702,6 +1703,12 @@ impl SuiNode {
         }
     }
 
+    async fn shutdown(&self) {
+        if let Some(validator_components) = &*self.validator_components.lock().await {
+            validator_components.consensus_manager.shutdown().await;
+        }
+    }
+
     async fn reconfigure_state(
         &self,
         state: &Arc<AuthorityState>,
@@ -1722,6 +1729,7 @@ impl SuiNode {
             next_epoch_start_system_state,
             *last_checkpoint.digest(),
             state.get_object_store().as_ref(),
+            None,
         )
         .expect("EpochStartConfiguration construction cannot fail");
 
@@ -1924,7 +1932,12 @@ pub fn build_http_server(
         ))?;
         server.register_module(MoveUtils::new(state))?;
 
-        server.to_router(None)?
+        let server_type = if config.websocket_only {
+            Some(ServerType::WebSocket)
+        } else {
+            None
+        };
+        server.to_router(server_type)?
     };
 
     router = router.merge(json_rpc_router);

@@ -20,7 +20,8 @@ use move_bytecode_utils::{layout::SerdeLayoutBuilder, module_cache::GetModule};
 use move_compiler::{
     compiled_unit::AnnotatedCompiledModule,
     diagnostics::{report_diagnostics_to_buffer, report_warnings, Diagnostics, FilesSourceText},
-    sui_mode::linters::LINT_WARNING_PREFIX,
+    editions::Edition,
+    linters::LINT_WARNING_PREFIX,
 };
 use move_core_types::{
     account_address::AccountAddress,
@@ -84,7 +85,10 @@ impl BuildConfig {
         let lock_file = install_dir.join("Move.lock");
         build_config.config.install_dir = Some(install_dir);
         build_config.config.lock_file = Some(lock_file);
-        build_config.config.no_lint = true;
+        build_config
+            .config
+            .lint_flag
+            .set(move_compiler::linters::LintLevel::None);
         build_config
     }
 
@@ -154,23 +158,12 @@ impl BuildConfig {
         let print_diags_to_stderr = self.print_diags_to_stderr;
         let run_bytecode_verifier = self.run_bytecode_verifier;
         let resolution_graph = self.resolution_graph(&path)?;
-        let result = build_from_resolution_graph(
+        build_from_resolution_graph(
             path.clone(),
             resolution_graph,
             run_bytecode_verifier,
             print_diags_to_stderr,
-        );
-        if let Ok(ref compiled) = result {
-            compiled
-                .package
-                .compiled_package_info
-                .build_flags
-                .update_lock_file_toolchain_version(&path, env!("CARGO_PKG_VERSION").into())
-                .map_err(|e| SuiError::ModuleBuildFailure {
-                    error: format!("Failed to update Move.lock toolchain version: {e}"),
-                })?;
-        }
-        result
+        )
     }
 
     pub fn resolution_graph(mut self, path: &Path) -> SuiResult<ResolvedGraph> {
@@ -620,6 +613,9 @@ impl PackageHooks for SuiPackageHooks {
         &self,
         manifest: &SourceManifest,
     ) -> anyhow::Result<PackageIdentifier> {
+        if manifest.package.edition == Some(Edition::DEVELOPMENT) {
+            return Err(Edition::DEVELOPMENT.unknown_edition_error());
+        }
         Ok(manifest.package.name)
     }
 

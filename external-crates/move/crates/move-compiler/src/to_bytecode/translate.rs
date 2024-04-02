@@ -29,6 +29,7 @@ use move_symbol_pool::Symbol;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     convert::TryInto,
+    sync::Arc,
 };
 
 type CollectedInfos = UniqueMap<FunctionName, CollectedInfo>;
@@ -36,7 +37,7 @@ type CollectedInfo = (Vec<(Mutability, Var, H::SingleType)>, Attributes);
 
 fn extract_decls(
     compilation_env: &mut CompilationEnv,
-    pre_compiled_lib: Option<&FullyCompiledProgram>,
+    pre_compiled_lib: Option<Arc<FullyCompiledProgram>>,
     prog: &G::Program,
 ) -> (
     HashMap<ModuleIdent, usize>,
@@ -109,7 +110,7 @@ fn extract_decls(
 
 pub fn program(
     compilation_env: &mut CompilationEnv,
-    pre_compiled_lib: Option<&FullyCompiledProgram>,
+    pre_compiled_lib: Option<Arc<FullyCompiledProgram>>,
     prog: G::Program,
 ) -> Vec<AnnotatedCompiledUnit> {
     let mut units = vec![];
@@ -403,6 +404,9 @@ fn constant(
     n: ConstantName,
     c: G::Constant,
 ) -> IR::Constant {
+    let is_error_constant = c
+        .attributes
+        .contains_key_(&known_attributes::ErrorAttribute.into());
     let name = context.constant_definition_name(m, n);
     let signature = base_type(context, c.signature);
     let value = c.value.unwrap();
@@ -410,6 +414,7 @@ fn constant(
         name,
         signature,
         value,
+        is_error_constant,
     }
 }
 
@@ -454,7 +459,10 @@ fn function(
         warning_filter: _warning_filter,
         index: _index,
         attributes,
-        visibility: v,
+        compiled_visibility: v,
+        // original, declared visibility is ignored. This is primarily for marking entry functions
+        // as public in tests
+        visibility: _,
         entry,
         signature,
         body,
@@ -903,6 +911,22 @@ fn exp(context: &mut Context, code: &mut IR::BytecodeBlock, e: H::Exp) {
         E::Copy { var: v, .. } => code.push(sp(loc, B::CopyLoc(var(v)))),
 
         E::Constant(c) => code.push(sp(loc, B::LdNamedConst(context.constant_name(c)))),
+
+        E::ErrorConstant(const_name) => {
+            let line_no = context.env.file_mapping().location(loc).start.line;
+
+            // Clamp line number to u16::MAX -- so if the line number exceeds u16::MAX, we don't
+            // record the line number essentially.
+            let line_number = std::cmp::min(line_no, u16::MAX as usize) as u16;
+
+            code.push(sp(
+                loc,
+                B::ErrorConstant {
+                    line_number,
+                    constant: const_name.map(|n| context.constant_name(n)),
+                },
+            ));
+        }
 
         E::ModuleCall(mcall) => {
             for arg in mcall.arguments {

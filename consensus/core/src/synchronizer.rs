@@ -16,7 +16,7 @@ use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 use tokio::time::{error::Elapsed, sleep, sleep_until, timeout, Instant};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::block::{BlockRef, SignedBlock, VerifiedBlock};
 use crate::block_verifier::BlockVerifier;
@@ -237,6 +237,10 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
                             }
                         }
                     }
+                },
+                else => {
+                    info!("Fetching blocks from authority {peer_index} task will now abort.");
+                    break;
                 }
             }
         }
@@ -314,7 +318,11 @@ impl<C: NetworkClient, V: BlockVerifier, D: CoreThreadDispatcher> Synchronizer<C
         let start = Instant::now();
         let resp = timeout(
             request_timeout,
-            network_client.fetch_blocks(peer, block_refs.clone().into_iter().collect::<Vec<_>>()),
+            network_client.fetch_blocks(
+                peer,
+                block_refs.clone().into_iter().collect::<Vec<_>>(),
+                request_timeout,
+            ),
         )
         .await;
 
@@ -560,7 +568,8 @@ mod tests {
         async fn send_block(
             &self,
             _peer: AuthorityIndex,
-            _serialized_block: &Bytes,
+            _serialized_block: &VerifiedBlock,
+            _timeout: Duration,
         ) -> ConsensusResult<()> {
             todo!()
         }
@@ -569,6 +578,7 @@ mod tests {
             &self,
             peer: AuthorityIndex,
             block_refs: Vec<BlockRef>,
+            _timeout: Duration,
         ) -> ConsensusResult<Vec<Bytes>> {
             let mut lock = self.fetch_blocks_requests.lock().await;
             let response = lock

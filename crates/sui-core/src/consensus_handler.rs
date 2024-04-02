@@ -210,6 +210,10 @@ impl<C: CheckpointServiceNotify + Send + Sync> ExecutionState for ConsensusHandl
             .await;
     }
 
+    fn last_executed_sub_dag_round(&self) -> u64 {
+        self.last_consensus_stats.index.last_committed_round
+    }
+
     fn last_executed_sub_dag_index(&self) -> u64 {
         self.last_consensus_stats.index.sub_dag_index
     }
@@ -302,9 +306,13 @@ impl<C: CheckpointServiceNotify + Send + Sync> ConsensusHandler<C> {
             .expect("Unrecoverable error in consensus handler");
 
         if !new_jwks.is_empty() {
-            debug!("adding AuthenticatorStateUpdate tx: {:?}", new_jwks);
             let authenticator_state_update_transaction =
                 self.authenticator_state_update_transaction(round, new_jwks);
+            debug!(
+                "adding AuthenticatorStateUpdate({:?}) tx: {:?}",
+                authenticator_state_update_transaction.digest(),
+                authenticator_state_update_transaction,
+            );
 
             transactions.push((
                 empty_bytes.as_slice(),
@@ -802,9 +810,7 @@ mod tests {
 
     use narwhal_config::AuthorityIdentifier;
     use narwhal_test_utils::latest_protocol_version;
-    use narwhal_types::{
-        Batch, Certificate, CommittedSubDag, Header, HeaderV2Builder, ReputationScores,
-    };
+    use narwhal_types::{Batch, Certificate, CommittedSubDag, HeaderV1Builder, ReputationScores};
     use prometheus::Registry;
     use shared_crypto::intent::Intent;
     use sui_protocol_config::{ConsensusTransactionOrdering, SupportedProtocolVersions};
@@ -886,7 +892,7 @@ mod tests {
             batches.push(vec![batch.clone()]);
 
             // AND make batch as part of a commit
-            let header = HeaderV2Builder::default()
+            let header = HeaderV1Builder::default()
                 .author(AuthorityIdentifier(0))
                 .round(5)
                 .epoch(0)
@@ -898,7 +904,7 @@ mod tests {
             let certificate = Certificate::new_unsigned(
                 latest_protocol_config,
                 &committee,
-                Header::V2(header),
+                header.into(),
                 vec![],
             )
             .unwrap();
