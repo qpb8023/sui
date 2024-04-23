@@ -71,18 +71,33 @@ const references = [
 			},
 			{
 				type: 'link',
-				label: 'Sui Go SDK',
+				label: 'Dart SDK',
+				href: 'https://github.com/mofalabs/sui',
+			},
+			{
+				type: 'link',
+				label: 'Go SDK',
 				href: 'https://github.com/block-vision/sui-go-sdk',
 			},
 			{
 				type: 'link',
-				label: 'Sui Python SDK',
+				label: 'Kotlin SDK',
+				href: 'https://github.com/mcxross/ksui',
+			},
+			{
+				type: 'link',
+				label: 'Python SDK',
 				href: 'https://github.com/FrankC01/pysui',
 			},
 			'references/rust-sdk',
 			{
 				type: 'link',
-				label: 'Sui TypeScript SDK',
+				label: 'Swift SDK',
+				href: 'https://github.com/opendive/suikit',
+			},
+			{
+				type: 'link',
+				label: 'TypeScript SDK',
 				href: 'https://sdk.mystenlabs.com/typescript',
 			},
 		],
@@ -123,6 +138,7 @@ const references = [
 			id: 'references/contribute/contribution-process',
 		},
 		items: [
+			'references/contribute/sui-environment',
 			'references/contribute/contribution-process',
 			'references/contribute/contribute-to-sui-repos',
 			{
