@@ -71,7 +71,7 @@ pub async fn send_and_confirm_transaction(
     let certificate =
         CertifiedTransaction::new(transaction.into_message(), vec![vote.clone()], &committee)
             .unwrap()
-            .verify_authenticated(&committee, &Default::default())
+            .try_into_verified(&committee, &Default::default())
             .unwrap();
 
     // Submit the confirmation. *Now* execution actually happens, and it should fail when we try to look up our dummy module.
@@ -214,10 +214,12 @@ async fn init_genesis(
     // add object_basics package object to genesis
     let modules: Vec<_> = compile_basics_package().get_modules().cloned().collect();
     let genesis_move_packages: Vec<_> = BuiltInFramework::genesis_move_packages().collect();
+    let config = ProtocolConfig::get_for_max_version_UNSAFE();
     let pkg = Object::new_package(
         &modules,
         TransactionDigest::genesis_marker(),
-        ProtocolConfig::get_for_max_version_UNSAFE().max_move_package_size(),
+        config.max_move_package_size(),
+        config.move_binary_format_version(),
         &genesis_move_packages,
     )
     .unwrap();

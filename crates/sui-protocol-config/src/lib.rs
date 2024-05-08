@@ -13,7 +13,7 @@ use tracing::{info, warn};
 
 /// The minimum and maximum protocol versions supported by this build.
 const MIN_PROTOCOL_VERSION: u64 = 1;
-const MAX_PROTOCOL_VERSION: u64 = 44;
+const MAX_PROTOCOL_VERSION: u64 = 45;
 
 // Record history of protocol version allocations here:
 //
@@ -120,6 +120,8 @@ const MAX_PROTOCOL_VERSION: u64 = 44;
 //             Introduce an explicit parameter for the tick limit per package (previously this was
 //             represented by the parameter for the tick limit per module).
 // Version 44: Enable consensus fork detection on mainnet.
+//             Switch between Narwhal and Mysticeti consensus in tests, devnet and testnet.
+// Version 45: Use tonic networking for Mysticeti consensus.
 
 #[derive(Copy, Clone, Debug, Hash, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProtocolVersion(u64);
@@ -408,6 +410,10 @@ struct FeatureFlags {
     #[serde(skip_serializing_if = "ConsensusChoice::is_narwhal")]
     consensus_choice: ConsensusChoice,
 
+    // Consensus network to use.
+    #[serde(skip_serializing_if = "ConsensusNetwork::is_anemo")]
+    consensus_network: ConsensusNetwork,
+
     // Set the upper bound allowed for max_epoch in zklogin signature.
     #[serde(skip_serializing_if = "Option::is_none")]
     zklogin_max_epoch_upper_bound_delta: Option<u64>,
@@ -463,6 +469,20 @@ pub enum ConsensusChoice {
 impl ConsensusChoice {
     pub fn is_narwhal(&self) -> bool {
         matches!(self, ConsensusChoice::Narwhal)
+    }
+}
+
+// Configuration options for consensus network.
+#[derive(Default, Copy, Clone, PartialEq, Eq, Serialize, Debug)]
+pub enum ConsensusNetwork {
+    #[default]
+    Anemo,
+    Tonic,
+}
+
+impl ConsensusNetwork {
+    pub fn is_anemo(&self) -> bool {
+        matches!(self, ConsensusNetwork::Anemo)
     }
 }
 
@@ -1010,6 +1030,9 @@ pub struct ProtocolConfig {
     /// the epoch, if it hasn't already completed.
     random_beacon_dkg_timeout_round: Option<u32>,
 
+    /// Minimum interval between consecutive rounds of generated randomness.
+    random_beacon_min_round_interval_ms: Option<u64>,
+
     /// The maximum serialised transaction size (in bytes) accepted by consensus. That should be bigger than the
     /// `max_tx_size_bytes` with some additional headroom.
     consensus_max_transaction_size_bytes: Option<u64>,
@@ -1251,6 +1274,10 @@ impl ProtocolConfig {
 
     pub fn consensus_choice(&self) -> ConsensusChoice {
         self.feature_flags.consensus_choice
+    }
+
+    pub fn consensus_network(&self) -> ConsensusNetwork {
+        self.feature_flags.consensus_network
     }
 }
 
@@ -1686,6 +1713,8 @@ impl ProtocolConfig {
 
             random_beacon_dkg_timeout_round: None,
 
+            random_beacon_min_round_interval_ms: None,
+
             consensus_max_transaction_size_bytes: None,
 
             consensus_max_transactions_in_block_bytes: None,
@@ -1935,7 +1964,8 @@ impl ProtocolConfig {
                     if chain != Chain::Mainnet && chain != Chain::Testnet {
                         cfg.feature_flags.random_beacon = true;
                         cfg.random_beacon_reduction_lower_bound = Some(1600);
-                        cfg.random_beacon_dkg_timeout_round = Some(200);
+                        cfg.random_beacon_dkg_timeout_round = Some(3000);
+                        cfg.random_beacon_min_round_interval_ms = Some(150);
                     }
                     // Only enable consensus digest in consensus commit prologue in devnet.
                     if chain != Chain::Testnet && chain != Chain::Mainnet {
@@ -2094,10 +2124,17 @@ impl ProtocolConfig {
                 44 => {
                     // Enable consensus digest in consensus commit prologue on all networks..
                     cfg.feature_flags.include_consensus_digest_in_prologue = true;
-                    // Switch between Narwhal and Mysticeti per epoch in tests and devnet.
-                    if chain != Chain::Testnet && chain != Chain::Mainnet {
+                    // Switch between Narwhal and Mysticeti per epoch in tests, devnet and testnet.
+                    if chain != Chain::Mainnet {
                         cfg.feature_flags.consensus_choice = ConsensusChoice::SwapEachEpoch;
                     }
+                }
+                45 => {
+                    // Use tonic networking for consensus, in tests and devnet.
+                    if chain != Chain::Testnet && chain != Chain::Mainnet {
+                        cfg.feature_flags.consensus_network = ConsensusNetwork::Tonic;
+                    }
+                    // Also bumps framework snapshot to fix binop issue.
                 }
                 // Use this template when making changes:
                 //
@@ -2147,6 +2184,7 @@ impl ProtocolConfig {
             allow_receiving_object_id: self.allow_receiving_object_id(),
             reject_mutable_random_on_entry_functions: self
                 .reject_mutable_random_on_entry_functions(),
+            bytecode_version: self.move_binary_format_version(),
         }
     }
 
@@ -2242,6 +2280,10 @@ impl ProtocolConfig {
 
     pub fn set_consensus_choice(&mut self, val: ConsensusChoice) {
         self.feature_flags.consensus_choice = val;
+    }
+
+    pub fn set_consensus_network(&mut self, val: ConsensusNetwork) {
+        self.feature_flags.consensus_network = val;
     }
 
     pub fn set_max_accumulated_txn_cost_per_object_in_checkpoint(&mut self, val: u64) {

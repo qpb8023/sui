@@ -7,7 +7,7 @@ use crate::{
     command_line as cli,
     diagnostics::{
         codes::{Category, Declarations, DiagnosticsID, Severity, WarningFilter},
-        Diagnostic, Diagnostics, FileName, MappedFiles, WarningFilters,
+        Diagnostic, Diagnostics, DiagnosticsFormat, FileName, MappedFiles, WarningFilters,
     },
     editions::{
         check_feature_or_error as edition_check_feature, feature_edition_error_msg, Edition,
@@ -40,6 +40,7 @@ pub mod ast_debug;
 pub mod known_attributes;
 pub mod program_info;
 pub mod remembering_unique_map;
+pub mod string_utils;
 pub mod unique_map;
 pub mod unique_set;
 
@@ -340,10 +341,14 @@ impl CompilationEnv {
         } else {
             vec![]
         };
+        let mut diags = Diagnostics::new();
+        if flags.json_errors() {
+            diags.set_format(DiagnosticsFormat::JSON);
+        }
         Self {
             flags,
             warning_filter,
-            diags: Diagnostics::new(),
+            diags,
             visitors: Rc::new(Visitors::new(visitors)),
             package_configs,
             default_config: default_config.unwrap_or_default(),
@@ -650,6 +655,12 @@ pub struct Flags {
     )]
     warnings_are_errors: bool,
 
+    /// If set, report errors as json.
+    #[clap(
+        long = cli::JSON_ERRORS,
+    )]
+    json_errors: bool,
+
     /// If set, all warnings are silenced
     #[clap(
         long = cli::SILENCE_WARNINGS,
@@ -686,6 +697,7 @@ impl Flags {
             bytecode_version: None,
             warnings_are_errors: false,
             silence_warnings: false,
+            json_errors: false,
             keep_testing_functions: false,
         }
     }
@@ -696,6 +708,7 @@ impl Flags {
             shadow: false,
             bytecode_version: None,
             warnings_are_errors: false,
+            json_errors: false,
             silence_warnings: false,
             keep_testing_functions: false,
         }
@@ -729,6 +742,13 @@ impl Flags {
         }
     }
 
+    pub fn set_json_errors(self, value: bool) -> Self {
+        Self {
+            json_errors: value,
+            ..self
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self == &Self::empty()
     }
@@ -751,6 +771,10 @@ impl Flags {
 
     pub fn warnings_are_errors(&self) -> bool {
         self.warnings_are_errors
+    }
+
+    pub fn json_errors(&self) -> bool {
+        self.json_errors
     }
 
     pub fn silence_warnings(&self) -> bool {
@@ -951,136 +975,3 @@ impl IndexedPhysicalPackagePath {
         })
     }
 }
-
-//**************************************************************************************************
-// String Construction Helpers
-//**************************************************************************************************
-
-macro_rules! format_oxford_list {
-    ($sep:expr, $format_str:expr, $e:expr) => {{
-        let entries = $e;
-        match entries.len() {
-            0 => String::new(),
-            1 => format!($format_str, entries[0]),
-            2 => format!(
-                "{} {} {}",
-                format!($format_str, entries[0]),
-                $sep,
-                format!($format_str, entries[1])
-            ),
-            _ => {
-                let entries = entries
-                    .iter()
-                    .map(|entry| format!($format_str, entry))
-                    .collect::<Vec<_>>();
-                if let Some((last, init)) = entries.split_last() {
-                    let mut result = init.join(", ");
-                    result.push_str(&format!(", {} {}", $sep, last));
-                    result
-                } else {
-                    String::new()
-                }
-            }
-        }
-    }};
-}
-
-pub(crate) use format_oxford_list;
-
-//**************************************************************************************************
-// Debug Printing
-//**************************************************************************************************
-
-/// Debug formatter based on provided `fmt` option:
-///
-/// - None: calls `val.print()`
-/// - `verbose`: calls `val.print_verbose()`
-/// - `fmt`: calls `println!("{}", val)`
-/// - `dbg`: calls `println!("{:?}", val)`
-/// - `sdbg`: calls `println!("{:#?}", val)`
-macro_rules! debug_print_format {
-    ($val:expr) => {{
-        $val.print();
-    }};
-    ($val:expr ; verbose) => {{
-        $val.print_verbose();
-    }};
-    ($val:expr ; fmt) => {{
-        println!("{}", $val);
-    }};
-    ($val:expr ; dbg) => {{
-        println!("{:?}", $val);
-    }};
-    ($val:expr ; sdbg) => {{
-        println!("{:#?}", $val);
-    }};
-}
-
-pub(crate) use debug_print_format;
-
-/// Print formatter for debugging. Allows a few different forms:
-///
-/// `(msg `s`)`                        as println!(s);
-/// `(name => val [; fmt])`            as "name: " + debug_fprint_ormat!(vall fmt)
-/// `(opt name => val [; fmt])`        as "name: " + "Some " debug_print_format!(val; fmt) or "None"
-/// `(lines name => val [; fmt]) ` as "name: " + for n in val { debug_print_format!(n; fmt) }
-///
-/// See `debug_print_format` for different `fmt` options.
-macro_rules! debug_print_internal {
-    () => {};
-    (($name:expr => $val:expr $(; $fmt:ident)?)) => {
-        {
-        print!("{}: ", $name);
-        crate::shared::debug_print_format!($val $(; $fmt)*);
-        }
-    };
-    ((opt $name:expr => $val:expr $(; $fmt:ident)?)) => {
-        {
-        print!("{}: ", $name);
-        match $val {
-            Some(value) => { print!("Some "); crate::shared::debug_print_format!(value $(; $fmt)*); }
-            None => { print!("None"); }
-        }
-        }
-    };
-    ((lines $name:expr => $val:expr $(; $fmt:ident)?)) => { {
-        println!("\n{}: ", $name);
-        for n in $val {
-            crate::shared::debug_print_format!(n $(; $fmt)*);
-        }
-    }
-    };
-    ($fst:tt, $($rest:tt),+) => { {
-        crate::shared::debug_print_internal!($fst);
-        crate::shared::debug_print_internal!($($rest),+);
-    }
-    };
-}
-
-pub(crate) use debug_print_internal;
-
-/// Macro for a small DSL for compactling printing debug information based on the provided flag.
-///
-///  ```
-///  debug_print!(
-///      context.debug_flags.match_compilation,
-///      ("subject" => subject),
-///      (opt "flag" => flag; dbg)
-///      (lines "arms" => &arms.value; verbose)
-///  );
-///  ```
-///
-/// See `debug_print_internal` for the available syntax.
-///
-/// Feature gates the print and check against the `debug_assertions` feature.
-macro_rules! debug_print {
-    ($flag:expr, $($arg:tt),+) => {
-        #[cfg(debug_assertions)]
-        if $flag {
-            println!("\n------------------");
-            crate::shared::debug_print_internal!($($arg),+)
-        }
-    }
-}
-
-pub(crate) use debug_print;

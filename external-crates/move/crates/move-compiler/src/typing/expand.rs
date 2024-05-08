@@ -217,7 +217,7 @@ pub fn exp(context: &mut Context, e: &mut T::Exp) {
         | E::Copy { .. }
         | E::BorrowLocal(_, _)
         | E::Continue(_)
-        | E::ErrorConstant(_)
+        | E::ErrorConstant { .. }
         | E::UnresolvedError => (),
 
         E::ModuleCall(call) => module_call(context, call),
@@ -424,7 +424,7 @@ fn pat(context: &mut Context, p: &mut T::MatchPattern) {
             pat(context, rhs);
         }
         P::At(_var, inner) => pat(context, inner),
-        P::ErrorPat | P::Literal(_) | P::Binder(_, _) | P::Wildcard => (),
+        P::Constant(_, _) | P::ErrorPat | P::Literal(_) | P::Binder(_, _) | P::Wildcard => (),
     }
 }
 

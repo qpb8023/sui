@@ -11,7 +11,7 @@ use crate::{
             AliasEntry, AliasMapBuilder, ParserExplicitUseFun, UnnecessaryAlias, UseFunsBuilder,
         },
         aliases::AliasSet,
-        ast::{self as E, Address, Fields, ModuleIdent, ModuleIdent_},
+        ast::{self as E, Address, Fields, ModuleIdent, ModuleIdent_, TargetKind},
         byte_string, hex_string,
         path_expander::{
             access_result, Access, LegacyPathExpander, ModuleAccessResult, Move2024PathExpander,
@@ -25,7 +25,12 @@ use crate::{
         FunctionName, ModuleName, NameAccess, Var, VariantName, ENTRY_MODIFIER, MACRO_MODIFIER,
         NATIVE_MODIFIER,
     },
-    shared::{known_attributes::AttributePosition, unique_map::UniqueMap, *},
+    shared::{
+        known_attributes::AttributePosition,
+        string_utils::{is_pascal_case, is_upper_snake_case},
+        unique_map::UniqueMap,
+        *,
+    },
     FullyCompiledProgram,
 };
 use move_command_line_common::parser::{parse_u16, parse_u256, parse_u32};
@@ -890,12 +895,18 @@ fn module_(
 
     context.pop_alias_scope(Some(&mut use_funs));
 
+    let target_kind = if !context.is_source_definition {
+        TargetKind::External
+    } else {
+        let is_root_package = !context.env().package_config(package_name).is_dependency;
+        TargetKind::Source { is_root_package }
+    };
     let def = E::ModuleDefinition {
         package_name,
         attributes,
         loc,
         use_funs,
-        is_source_module: context.is_source_definition,
+        target_kind,
         friends,
         structs,
         enums,
@@ -2959,7 +2970,7 @@ fn match_pattern(context: &mut Context, sp!(loc, pat_): P::MatchPattern) -> E::M
                     (
                         name.loc,
                         "Unexpected name access. \
-                        Expected a valid 'enum' variant or 'struct' name."
+                        Expected a valid 'enum' variant, 'struct', or 'const'."
                     )
                 ));
                 None
@@ -3078,9 +3089,14 @@ fn match_pattern(context: &mut Context, sp!(loc, pat_): P::MatchPattern) -> E::M
                             with 'a'..'z' or '_'",
                             name_value,
                         );
-                        context
-                            .env()
-                            .add_diag(diag!(Declarations::InvalidName, (name.loc, msg)));
+                        let mut diag = diag!(Declarations::InvalidName, (name.loc, msg));
+                        if is_pascal_case(&name_value) || is_upper_snake_case(&name_value) {
+                            diag.add_note(
+                                "The compiler may have failed to \
+                                resolve this constant's name",
+                            );
+                        }
+                        context.env().add_diag(diag);
                         error_pattern!()
                     } else {
                         if let Some(_tys) = pts_opt {
@@ -3095,7 +3111,8 @@ fn match_pattern(context: &mut Context, sp!(loc, pat_): P::MatchPattern) -> E::M
                 head_ctor_name @ sp!(_, EM::Variant(_, _) | EM::ModuleAccess(_, _)) => {
                     if let Some(mloc) = mut_ {
                         let msg = "'mut' can only be used with variable bindings in patterns";
-                        let nmsg = "This refers to a variant, not a variable binding";
+                        let nmsg =
+                            "Expected a valid 'enum' variant, 'struct', or 'const', not a variable";
                         context.env().add_diag(diag!(
                             Declarations::InvalidName,
                             (mloc, msg),
@@ -3105,7 +3122,7 @@ fn match_pattern(context: &mut Context, sp!(loc, pat_): P::MatchPattern) -> E::M
                     } else {
                         sp(
                             loc,
-                            EP::HeadConstructor(
+                            EP::ModuleAccessName(
                                 head_ctor_name,
                                 optional_sp_types(context, pts_opt),
                             ),

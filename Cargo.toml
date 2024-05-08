@@ -74,7 +74,7 @@ members = [
   "consensus/config",
   "consensus/core",
   "crates/anemo-benchmark",
-  "crates/data-transform",
+  "crates/bin-version",
   "crates/mysten-common",
   "crates/mysten-metrics",
   "crates/mysten-network",
@@ -197,7 +197,7 @@ members = [
 
 [workspace.package]
 # This version string will be inherited by sui-core, sui-faucet, sui-node, sui-tools, sui-sdk, sui-move-build, and sui crates.
-version = "1.24.0"
+version = "1.25.0"
 
 [profile.release]
 # debug = 1 means line charts only, which is minimum needed for good stack traces
@@ -294,6 +294,7 @@ color-eyre = "0.6.2"
 comfy-table = "6.1.3"
 console-subscriber = "0.2"
 const-str = "0.5.3"
+count-min-sketch = "0.1.7"
 criterion = { version = "0.5.0", features = [
   "async",
   "async_tokio",
@@ -310,14 +311,12 @@ derive_builder = "0.12.0"
 derive_more = "0.99.17"
 diesel = { version = "2.1.0", features = [
   "chrono",
-  "postgres",
   "r2d2",
   "serde_json",
   "64-column-tables",
   "i-implement-a-third-party-backend-and-opt-into-breaking-changes",
-  "postgres_backend",
 ] }
-diesel-derive-enum = { version = "2.0.1", features = ["postgres"] }
+diesel-derive-enum = { version = "2.0.1" }
 diesel_migrations = { version = "2.0.0" }
 dirs = "4.0.0"
 duration-str = "0.5.0"
@@ -572,6 +571,7 @@ anemo-tower = { git = "https://github.com/mystenlabs/anemo.git", rev = "26d415eb
 
 ### Workspace Members ###
 anemo-benchmark = { path = "crates/anemo-benchmark" }
+bin-version = { path = "crates/bin-version" }
 mysten-common = { path = "crates/mysten-common" }
 mysten-metrics = { path = "crates/mysten-metrics" }
 mysten-network = { path = "crates/mysten-network" }

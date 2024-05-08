@@ -1,7 +1,7 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use core::ops::Range;
+use std::ops::RangeInclusive;
 use std::{collections::BTreeMap, ops::Bound::Included, sync::Arc};
 
 use consensus_config::AuthorityIndex;
@@ -107,6 +107,46 @@ impl DagBuilder {
         }
     }
 
+    pub(crate) fn blocks(&self, rounds: RangeInclusive<Round>) -> Vec<VerifiedBlock> {
+        assert!(
+            !self.blocks.is_empty(),
+            "No blocks have been created, please make sure that you have called build method"
+        );
+        self.blocks
+            .iter()
+            .filter_map(|(block_ref, block)| rounds.contains(&block_ref.round).then_some(block))
+            .cloned()
+            .collect::<Vec<VerifiedBlock>>()
+    }
+
+    pub(crate) fn leader_blocks(
+        &self,
+        rounds: RangeInclusive<Round>,
+    ) -> Vec<Option<VerifiedBlock>> {
+        assert!(
+            !self.blocks.is_empty(),
+            "No blocks have been created, please make sure that you have called build method"
+        );
+        rounds
+            .into_iter()
+            .map(|round| self.leader_block(round))
+            .collect()
+    }
+
+    pub(crate) fn leader_block(&self, round: Round) -> Option<VerifiedBlock> {
+        assert!(
+            !self.blocks.is_empty(),
+            "No blocks have been created, please make sure that you have called build method"
+        );
+        self.blocks
+            .iter()
+            .find(|(block_ref, block)| {
+                block_ref.round == round
+                    && block_ref.author == self.leader_schedule.elect_leader(round, 0)
+            })
+            .map(|(_block_ref, block)| block.clone())
+    }
+
     pub(crate) fn with_wave_length(mut self, wave_length: Round) -> Self {
         self.wave_length = wave_length;
         self
@@ -126,9 +166,9 @@ impl DagBuilder {
         LayerBuilder::new(self, round)
     }
 
-    pub(crate) fn layers(&mut self, rounds: Range<Round>) -> LayerBuilder {
-        let mut builder = LayerBuilder::new(self, rounds.start);
-        builder.end_round = Some(rounds.end);
+    pub(crate) fn layers(&mut self, rounds: RangeInclusive<Round>) -> LayerBuilder {
+        let mut builder = LayerBuilder::new(self, *rounds.start());
+        builder.end_round = Some(*rounds.end());
         builder
     }
 
@@ -392,6 +432,7 @@ impl<'a> LayerBuilder<'a> {
     }
 
     pub fn persist_layers(&self, dag_state: Arc<RwLock<DagState>>) {
+        assert!(!self.blocks.is_empty(), "Called to persist layers although no blocks have been created. Make sure you have called build before.");
         dag_state.write().accept_blocks(self.blocks.clone());
     }
 

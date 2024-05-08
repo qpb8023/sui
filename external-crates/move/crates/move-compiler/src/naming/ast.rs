@@ -6,8 +6,8 @@ use crate::{
     diagnostics::WarningFilters,
     expansion::ast::{
         ability_constraints_ast_debug, ability_modifiers_ast_debug, AbilitySet, Attributes,
-        DottedUsage, Fields, Friend, ImplicitUseFunCandidate, ModuleIdent, Mutability, Value,
-        Value_, Visibility,
+        DottedUsage, Fields, Friend, ImplicitUseFunCandidate, ModuleIdent, Mutability, TargetKind,
+        Value, Value_, Visibility,
     },
     parser::ast::{
         self as P, Ability_, BinOp, ConstantName, DatatypeName, Field, FunctionName, UnaryOp,
@@ -141,7 +141,7 @@ pub struct ModuleDefinition {
     // package name metadata from compiler arguments, not used for any language rules
     pub package_name: Option<Symbol>,
     pub attributes: Attributes,
-    pub is_source_module: bool,
+    pub target_kind: TargetKind,
     pub use_funs: UseFuns,
     pub syntax_methods: SyntaxMethods,
     pub friends: UniqueMap<ModuleIdent, Friend>,
@@ -460,7 +460,9 @@ pub enum Exp_ {
     Cast(Box<Exp>, Type),
     Annotate(Box<Exp>, Type),
 
-    ErrorConstant,
+    ErrorConstant {
+        line_number_loc: Loc,
+    },
 
     UnresolvedError,
 }
@@ -502,6 +504,7 @@ pub enum MatchPattern_ {
         Option<Vec<Type>>,
         Fields<MatchPattern>,
     ),
+    Constant(ModuleIdent, ConstantName),
     Binder(Mutability, Var, /* unused binding */ bool),
     Literal(Value),
     Wildcard,
@@ -1192,7 +1195,7 @@ impl AstDebug for ModuleDefinition {
             warning_filter,
             package_name,
             attributes,
-            is_source_module,
+            target_kind,
             use_funs,
             syntax_methods,
             friends,
@@ -1206,11 +1209,15 @@ impl AstDebug for ModuleDefinition {
             w.writeln(&format!("{}", n))
         }
         attributes.ast_debug(w);
-        if *is_source_module {
-            w.writeln("library module")
-        } else {
-            w.writeln("source module")
-        }
+        w.writeln(match target_kind {
+            TargetKind::Source {
+                is_root_package: true,
+            } => "root module",
+            TargetKind::Source {
+                is_root_package: false,
+            } => "dependency module",
+            TargetKind::External => "external module",
+        });
         use_funs.ast_debug(w);
         syntax_methods.ast_debug(w);
         for (mident, _loc) in friends.key_cloned_iter() {
@@ -1808,7 +1815,7 @@ impl AstDebug for Exp_ {
                 w.write(")");
             }
             E::UnresolvedError => w.write("_|_"),
-            E::ErrorConstant => w.write("ErrorConstant"),
+            E::ErrorConstant { .. } => w.write("ErrorConstant"),
         }
     }
 }
@@ -1940,6 +1947,9 @@ impl AstDebug for MatchPattern_ {
                     pat.ast_debug(w);
                 });
                 w.write("} ");
+            }
+            Constant(mident, const_) => {
+                w.write(format!("const#{}::{}", mident, const_));
             }
             Binder(mut_, name, unused_binding) => {
                 mut_.ast_debug(w);

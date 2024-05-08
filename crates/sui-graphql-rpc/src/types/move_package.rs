@@ -9,7 +9,7 @@ use super::cursor::{JsonCursor, Page};
 use super::move_module::MoveModule;
 use super::move_object::MoveObject;
 use super::object::{
-    self, Object, ObjectFilter, ObjectImpl, ObjectLookupKey, ObjectOwner, ObjectStatus,
+    self, Object, ObjectFilter, ObjectImpl, ObjectLookup, ObjectOwner, ObjectStatus,
 };
 use super::owner::OwnerImpl;
 use super::stake::StakedSui;
@@ -18,7 +18,6 @@ use super::suins_registration::{DomainFormat, SuinsRegistration};
 use super::transaction_block::{self, TransactionBlock, TransactionBlockFilter};
 use super::type_filter::ExactTypeFilter;
 use crate::consistency::ConsistentNamedCursor;
-use crate::data::Db;
 use crate::error::Error;
 use async_graphql::connection::{Connection, CursorType, Edge};
 use async_graphql::*;
@@ -388,15 +387,7 @@ impl MovePackage {
 
 impl MovePackage {
     fn parsed_package(&self) -> Result<ParsedMovePackage, Error> {
-        // TODO: Leverage the package cache (attempt to read from it, and if that doesn't succeed,
-        // write back the parsed Package to the cache as well.)
-        let Some(native) = self.super_.native_impl() else {
-            return Err(Error::Internal(
-                "No native representation of package to parse.".to_string(),
-            ));
-        };
-
-        ParsedMovePackage::read(native)
+        ParsedMovePackage::read_from_package(&self.native)
             .map_err(|e| Error::Internal(format!("Error reading package: {e}")))
     }
 
@@ -421,11 +412,11 @@ impl MovePackage {
     }
 
     pub(crate) async fn query(
-        db: &Db,
+        ctx: &Context<'_>,
         address: SuiAddress,
-        key: ObjectLookupKey,
+        key: ObjectLookup,
     ) -> Result<Option<Self>, Error> {
-        let Some(object) = Object::query(db, address, key).await? else {
+        let Some(object) = Object::query(ctx, address, key).await? else {
             return Ok(None);
         };
 

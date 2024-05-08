@@ -34,14 +34,12 @@ use sui_protocol_config::{
     Chain, PerObjectCongestionControlMode, ProtocolConfig, ProtocolVersion,
     SupportedProtocolVersions,
 };
-use sui_types::digests::ConsensusCommitDigest;
 use sui_types::dynamic_field::DynamicFieldType;
 use sui_types::effects::TransactionEffects;
 use sui_types::epoch_data::EpochData;
 use sui_types::error::UserInputError;
 use sui_types::execution_status::{ExecutionFailureStatus, ExecutionStatus};
 use sui_types::gas_coin::GasCoin;
-use sui_types::messages_consensus::{ConsensusCommitPrologue, ConsensusCommitPrologueV2};
 use sui_types::object::Data;
 use sui_types::programmable_transaction_builder::ProgrammableTransactionBuilder;
 use sui_types::randomness_state::get_randomness_state_obj_initial_shared_version;
@@ -1751,7 +1749,9 @@ async fn test_publish_dependent_module_ok() {
     let dependent_module = make_dependent_module(&genesis_module);
     let dependent_module_bytes = {
         let mut bytes = Vec::new();
-        dependent_module.serialize(&mut bytes).unwrap();
+        dependent_module
+            .serialize_with_version(dependent_module.version, &mut bytes)
+            .unwrap();
         bytes
     };
 
@@ -1806,7 +1806,9 @@ async fn test_publish_module_no_dependencies_ok() {
 
     let module = file_format::empty_module();
     let mut module_bytes = Vec::new();
-    module.serialize(&mut module_bytes).unwrap();
+    module
+        .serialize_with_version(module.version, &mut module_bytes)
+        .unwrap();
     let module_bytes = vec![module_bytes];
     let dependencies = vec![]; // no dependencies
     let data = TransactionData::new_module(
@@ -1859,7 +1861,9 @@ async fn test_publish_non_existing_dependent_module() {
     });
     let dependent_module_bytes = {
         let mut bytes = Vec::new();
-        dependent_module.serialize(&mut bytes).unwrap();
+        dependent_module
+            .serialize_with_version(dependent_module.version, &mut bytes)
+            .unwrap();
         bytes
     };
     let authority = init_state_with_objects(vec![gas_payment_object]).await;
@@ -1914,7 +1918,9 @@ async fn test_package_size_limit() {
             Identifier::new(format!("TestModule{:0>21000?}", modules_size)).unwrap();
         let module_bytes = {
             let mut bytes = Vec::new();
-            module.serialize(&mut bytes).unwrap();
+            module
+                .serialize_with_version(module.version, &mut bytes)
+                .unwrap();
             bytes
         };
         modules_size += module_bytes.len() as u64;
@@ -2976,79 +2982,6 @@ async fn test_idempotent_reversed_confirmation() {
             .into_effects_for_testing()
             .into_data()
     );
-}
-
-#[tokio::test]
-async fn test_refusal_to_sign_consensus_commit_prologue() {
-    // The system should refuse to handle sender-signed system transactions
-    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
-    let gas_object_id = ObjectID::random();
-    let gas_object = Object::with_id_owner_for_testing(gas_object_id, sender);
-    let authority_state = init_state_with_objects(vec![gas_object.clone()]).await;
-    let rgp = authority_state.reference_gas_price_for_testing().unwrap();
-    let epoch_store = authority_state.load_epoch_store_one_call_per_task();
-
-    let gas_ref = gas_object.compute_object_reference();
-    let tx_data = TransactionData::new(
-        TransactionKind::ConsensusCommitPrologue(ConsensusCommitPrologue {
-            epoch: 0,
-            round: 0,
-            commit_timestamp_ms: 42,
-        }),
-        sender,
-        gas_ref,
-        TEST_ONLY_GAS_UNIT_FOR_GENERIC * rgp,
-        rgp,
-    );
-
-    // Sender is able to sign it.
-    let transaction = to_sender_signed_transaction(tx_data, &sender_key);
-    let transaction = epoch_store.verify_transaction(transaction).unwrap();
-
-    // But the authority should refuse to handle it.
-    assert!(matches!(
-        authority_state
-            .handle_transaction(&epoch_store, transaction)
-            .await,
-        Err(SuiError::InvalidSystemTransaction),
-    ));
-}
-
-#[tokio::test]
-async fn test_refusal_to_sign_consensus_commit_prologue_v2() {
-    // The system should refuse to handle sender-signed system transactions
-    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
-    let gas_object_id = ObjectID::random();
-    let gas_object = Object::with_id_owner_for_testing(gas_object_id, sender);
-    let authority_state = init_state_with_objects(vec![gas_object.clone()]).await;
-    let rgp = authority_state.reference_gas_price_for_testing().unwrap();
-    let epoch_store = authority_state.load_epoch_store_one_call_per_task();
-
-    let gas_ref = gas_object.compute_object_reference();
-    let tx_data = TransactionData::new(
-        TransactionKind::ConsensusCommitPrologueV2(ConsensusCommitPrologueV2 {
-            epoch: 0,
-            round: 0,
-            commit_timestamp_ms: 42,
-            consensus_commit_digest: ConsensusCommitDigest::default(),
-        }),
-        sender,
-        gas_ref,
-        TEST_ONLY_GAS_UNIT_FOR_GENERIC * rgp,
-        rgp,
-    );
-
-    // Sender is able to sign it.
-    let transaction = to_sender_signed_transaction(tx_data, &sender_key);
-    let transaction = epoch_store.verify_transaction(transaction).unwrap();
-
-    // But the authority should refuse to handle it.
-    assert!(matches!(
-        authority_state
-            .handle_transaction(&epoch_store, transaction)
-            .await,
-        Err(SuiError::InvalidSystemTransaction),
-    ));
 }
 
 #[tokio::test]
@@ -4680,7 +4613,7 @@ async fn make_test_transaction(
             CertifiedTransaction::new(transaction.clone().into_message(), sigs.clone(), &committee)
         {
             return cert
-                .verify_authenticated(&committee, &Default::default())
+                .try_into_verified(&committee, &Default::default())
                 .unwrap();
         }
     }
@@ -5813,7 +5746,7 @@ async fn test_per_object_congestion_control() {
             assert_eq!(future_round, commit_round + 1);
             assert_eq!(deferred_from_round, commit_round);
         }
-        DeferralKey::RandomnessDkg {
+        DeferralKey::Randomness {
             deferred_from_round,
         } => {
             panic!(
@@ -5873,7 +5806,7 @@ async fn test_per_object_congestion_control() {
             assert_eq!(future_round, commit_round + 2);
             assert_eq!(deferred_from_round, commit_round);
         }
-        DeferralKey::RandomnessDkg {
+        DeferralKey::Randomness {
             deferred_from_round,
         } => {
             panic!(
